@@ -4,16 +4,14 @@ import requests
 import random
 import datetime
 from datetime import timedelta
-import gym
 import pathlib
 import torch
+import os
+import json
 
 max_bars = 500
 starting_balance = 100000
 stake_amount = 100
-  #File "/Users/salvatore.rossitto/Documents/GitHub/muzero-general/self_play.py", line 296, in run
-  #ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
-
 class MuZeroConfig:
     def __init__(self):
         self.seed = 0
@@ -99,6 +97,19 @@ class MuZeroConfig:
         self.self_play_delay = 2
         self.temperature_threshold = 15
 
+        ### Replay Buffer
+        self.replay_buffer_size = 3000  # Number of self-play games to keep in the replay buffer
+        self.num_unroll_steps = 20  # Number of game moves to keep for every batch element
+        self.td_steps = 20  # Number of steps in the future to take into account for calculating the target value
+        self.PER = True  # Prioritized Replay (See paper appendix Training), select in priority the elements in the replay buffer which are unexpected for the network
+        self.PER_alpha = 0.5  # How much prioritization is used, 0 corresponding to the uniform case, paper suggests 1
+
+        ### Adjust the self play / training ratio to avoid over/underfitting
+        self.self_play_delay = 0  # Number of seconds to wait after each played game
+        self.training_delay = 0  # Number of seconds to wait after each training step
+        self.ratio = None  # Desired training steps per self played step ratio. Equivalent to a synchronous version, training can take much longer. Set it to None to disable it
+        # fmt: on
+        
         # Reanalyze (See paper appendix Reanalyse)
         self.use_last_model_value = True  # Use the last model to provide a fresher, stable n-step value (See paper appendix Reanalyze)
         self.reanalyse_on_gpu = False
@@ -133,38 +144,53 @@ class TradingEnv:
         self.prices_length = int(max_bars / 2)
 
     def generate_prices(self, start_date, end_date):
-        # Define Binance API endpoint for klines (candlestick data)
-        api_url = "https://api.binance.com/api/v3/klines"
+        # Define cache directory
+        cache_dir = "binance_cache"
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
 
-        # Define interval as 1 minute
-        interval = "1m"
+        # Define cache filename based on start and end dates
+        cache_filename = f"{self.pair}_{start_date}_{end_date}.json"
+        cache_filepath = os.path.join(cache_dir, cache_filename)
 
-        # Define date format for API request
-        date_format = "%Y-%m-%d %H:%M:%S"
+        if os.path.exists(cache_filepath):
+            # Load cached data from file
+            with open(cache_filepath, "r") as cache_file:
+                close_prices = json.load(cache_file)
+            print(f"Retrieved {len(close_prices)} candles from cache for {start_date} to {end_date}\n")
+        else:
+            # Define Binance API endpoint for klines (candlestick data)
+            api_url = "https://api.binance.com/api/v3/klines"
 
-        # Define start and end timestamps in milliseconds
-        start_timestamp = int(datetime.datetime.strptime(str(start_date), date_format).timestamp() * 1000)
-        end_timestamp = int(datetime.datetime.strptime(str(end_date), date_format).timestamp() * 1000)
+            # Define interval as 1 minute
+            interval = "1m"
 
-        # Define query parameters for API request
-        query_params = {
-            "symbol": self.pair,
-            "interval": interval,
-            "startTime": start_timestamp,
-            "endTime": end_timestamp
-        }
+            # Define date format for API request
+            date_format = "%Y-%m-%d %H:%M:%S"
 
-        # Send API request and retrieve response as a JSON object
-        response = requests.get(api_url, params=query_params).json()
+            # Define start and end timestamps in milliseconds
+            start_timestamp = int(datetime.datetime.strptime(str(start_date), date_format).timestamp() * 1000)
+            end_timestamp = int(datetime.datetime.strptime(str(end_date), date_format).timestamp() * 1000)
 
-        # Extract candlestick data from response
-        close_prices = []
-        for candlestick in response:
-            close_price = float(candlestick[4])
-            close_prices.append(close_price)
+            # Define query parameters for API request
+            query_params = {
+                "symbol": self.pair,
+                "interval": interval,
+                "startTime": start_timestamp,
+                "endTime": end_timestamp
+            }
 
-        # Return candlestick data
-        print(f"retrieved {len(close_prices)} candles")
+            # Send API request and retrieve response as a JSON object
+            response = requests.get(api_url, params=query_params).json()
+
+            # Extract candlestick data from response
+            close_prices = []
+            for candlestick in response:
+                close_price = float(candlestick[4])
+                close_prices.append(close_price)
+
+            # Return candlestick data
+            print(f"Binance Download at {datetime.datetime.now()} Retrieved {len(close_prices)} candles from {start_date} to {end_date}\n")
         return close_prices
 
     def step(self, action):
@@ -195,6 +221,7 @@ class TradingEnv:
                 self.avg_price = ((self.position * self.avg_price) + (quantity * price)) / (quantity + self.position)
                 self.position += quantity
                 self.balance -= quantity * price
+            self.balance -= (quantity * price * 0.001)
         else:  # Sell
             if (self.position > 0):
                 #close a long position
@@ -207,8 +234,9 @@ class TradingEnv:
                 self.avg_price = ((-self.position * self.avg_price) + (quantity * price)) / (quantity + -self.position)
                 self.position -= quantity
                 self.balance -= quantity * price
+            self.balance -= (quantity * price * 0.001)
 
-        reward =  self.position * (self.avg_price - price) + self.balance - starting_balance
+        reward =  (self.position * (self.avg_price - price)) + (self.balance - starting_balance)
         
         self.current_step += 1
         self.observation = self.prices[self.current_step:self.current_step+self.prices_length]

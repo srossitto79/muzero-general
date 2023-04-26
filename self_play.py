@@ -294,11 +294,11 @@ class MCTS:
             ).item()
             reward = models.support_to_scalar(reward, self.config.support_size).item()
             assert (
-                legal_actions
+                len(legal_actions) > 0
             ), f"Legal actions should not be an empty array. Got {legal_actions}."
             assert set(legal_actions).issubset(
                 set(self.config.action_space)
-            ), "Legal actions should be a subset of the action space."
+            ), "Legal actions should be a subset of the action space. {legal_actions} (actions space:{self.config.action_space})."
             root.expand(
                 legal_actions,
                 to_play,
