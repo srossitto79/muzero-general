@@ -10,6 +10,9 @@ import torch
 
 max_bars = 500
 starting_balance = 100000
+stake_amount = 100
+  #File "/Users/salvatore.rossitto/Documents/GitHub/muzero-general/self_play.py", line 296, in run
+  #ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
 
 class MuZeroConfig:
     def __init__(self):
@@ -63,7 +66,7 @@ class MuZeroConfig:
         self.reanalyse_on_gpu = False
         
         ### Network
-        self.network = "resnet"  # "resnet" / "fullyconnected"
+        self.network = "fullyconnected"  # "resnet" / "fullyconnected"
         self.support_size = 10  # Value and reward are scaled (with almost sqrt) and encoded on a vector with a range of -support_size to support_size. Choose it so that support_size <= sqrt(max(abs(discounted reward)))
         self.use_batch_norm = True
         
@@ -174,21 +177,21 @@ class TradingEnv:
         Returns:
             The new observation, the reward and a boolean if the game has ended.
         """
+        
+        print(f"STEP {self.current_step} balance:{self.balance} position:{self.position}")
+        
         assert action in self.legal_actions(), "Invalid action"
-        
-        
-        #TODO, the logic is all wrong, use position and avg price
         
         price = self.prices[self.current_step]
         if action == 1:  # Buy
             if (self.position < 0):
                 #close a short position
                 quantity = self.position
-                self.balance += (abs(self.position) * self.avg_price) - (abs(self.position) * self.price) 
+                self.balance += (abs(self.position) * self.avg_price) - (abs(self.position) * price) 
                 self.avg_price = 0
                 self.position = 0
             else: 
-                quantity = (self.balance / price) * 0.75
+                quantity = (stake_amount / price)
                 self.avg_price = ((self.position * self.avg_price) + (quantity * price)) / (quantity + self.position)
                 self.position += quantity
                 self.balance -= quantity * price
@@ -196,11 +199,11 @@ class TradingEnv:
             if (self.position > 0):
                 #close a long position
                 quantity = self.position
-                self.balance += (self.position * self.price) - (self.position * self.avg_price)
+                self.balance += (self.position * price) - (self.position * self.avg_price)
                 self.avg_price = 0
                 self.position = 0
             else: 
-                quantity = (self.balance / price) * 0.75
+                quantity = (stake_amount / price)
                 self.avg_price = ((-self.position * self.avg_price) + (quantity * price)) / (quantity + -self.position)
                 self.position -= quantity
                 self.balance -= quantity * price
@@ -233,10 +236,9 @@ class TradingEnv:
         Returns:
             An array of integers, subset of the action space.
         """
-        if self.balance == 0:
-            return np.array([0])
-        if self.balance < self.prices[self.current_step]:
-            return np.array([0, 2])
+        if self.balance < stake_amount:            
+            return np.array([0]) if self.position == 0 else np.array([0, (2 if self.position > 0 else 1)])
+
         return np.array([0, 1, 2])
 
     def reset(self):
@@ -251,7 +253,8 @@ class TradingEnv:
         self.position = 0
         self.avg_price = 0
         
-        start_date = datetime.datetime(year=random.randint(2021, 2022), month=random.randint(1, 12), day=random.randint(1, 28))
+        rng = random.Random(self.seed)
+        start_date = datetime.datetime(year=rng.randint(2021, 2022), month=rng.randint(1, 12), day=rng.randint(1, 28))
         end_date = start_date + timedelta(minutes=self.max_steps + self.prices_length + 1)
 
         self.prices = self.generate_prices(start_date, end_date)
@@ -342,6 +345,6 @@ class Game(AbstractGame):
         actions = {
             0: "Hold",
             1: "Long",
-            1: "Short",
+            2: "Short",
         }
         return f"{action_number}. {actions[action_number]}"
