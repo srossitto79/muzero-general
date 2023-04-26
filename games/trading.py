@@ -97,6 +97,11 @@ class MuZeroConfig:
         self.self_play_delay = 2
         self.temperature_threshold = 15
 
+        # Exponential learning rate schedule
+        self.lr_init = 0.0064  # Initial learning rate
+        self.lr_decay_rate = 1  # Set it to 1 to use a constant learning rate
+        self.lr_decay_steps = 1000
+
         ### Replay Buffer
         self.replay_buffer_size = 3000  # Number of self-play games to keep in the replay buffer
         self.num_unroll_steps = 20  # Number of game moves to keep for every batch element
@@ -189,6 +194,10 @@ class TradingEnv:
                 close_price = float(candlestick[4])
                 close_prices.append(close_price)
 
+            # Save candlestick data to cache file
+            with open(cache_filepath, "w") as cache_file:
+                json.dump(close_prices, cache_file)
+                
             # Return candlestick data
             print(f"Binance Download at {datetime.datetime.now()} Retrieved {len(close_prices)} candles from {start_date} to {end_date}\n")
         return close_prices
