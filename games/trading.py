@@ -10,7 +10,7 @@ import os
 import json
 
 max_bars = 500
-starting_balance = 100000
+starting_balance = 1000
 stake_amount = 100
 class MuZeroConfig:
     def __init__(self):
@@ -29,8 +29,7 @@ class MuZeroConfig:
         self.num_unroll_steps = 5
         self.td_steps = self.max_moves        
         self.max_num_gpus = None  # Fix the maximum number of GPUs to use. It's usually faster to use a single GPU (set it to 1) if it has enough memory. None will use every GPUs available
-        self.selfplay_on_gpu = False
-        
+
         # Root prior exploration noise
         self.root_dirichlet_alpha = 0.25
         self.root_exploration_fraction = 0.25
@@ -52,20 +51,20 @@ class MuZeroConfig:
         ### Training
         self.results_path = pathlib.Path(__file__).resolve().parents[1] / "results" / pathlib.Path(__file__).stem / datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")  # Path to store the model weights and TensorBoard logs
         self.save_model = True  # Save the checkpoint in results_path as model.checkpoint
-        self.training_steps = 1000 # Total number of training steps (ie weights update according to a batch)
+        self.training_steps = 10000 # Total number of training steps (ie weights update according to a batch)
         self.checkpoint_interval = 10  # Number of training steps before using the model for self-playing
-        self.value_loss_weight = 1  # Scale the value loss to avoid overfitting of the value function, paper recommends 0.25 (See paper appendix Reanalyze)
+        self.value_loss_weight = 0.25  # Scale the value loss to avoid overfitting of the value function, paper recommends 0.25 (See paper appendix Reanalyze)
         self.train_on_gpu = torch.cuda.is_available()  # Train on GPU if available
         
         self.optimizer = "Adam"  # "Adam" or "SGD". Paper uses SGD
         self.weight_decay = 1e-4  # L2 weights regularization
         self.momentum = 0.9  # Used only if optimizer is SGD
 
-        self.reanalyse_on_gpu = False
+        self.reanalyse_on_gpu = torch.cuda.is_available()
         
         ### Network
         self.network = "fullyconnected"  # "resnet" / "fullyconnected"
-        self.support_size = 10  # Value and reward are scaled (with almost sqrt) and encoded on a vector with a range of -support_size to support_size. Choose it so that support_size <= sqrt(max(abs(discounted reward)))
+        self.support_size = 100  # Value and reward are scaled (with almost sqrt) and encoded on a vector with a range of -support_size to support_size. Choose it so that support_size <= sqrt(max(abs(discounted reward)))
         self.use_batch_norm = True
         
         # Residual Network
@@ -81,15 +80,15 @@ class MuZeroConfig:
 
         # Fully Connected Network
         self.encoding_size = 5
-        self.fc_representation_layers = [16]  # Define the hidden layers in the representation network
-        self.fc_dynamics_layers = [16]  # Define the hidden layers in the dynamics network
-        self.fc_reward_layers = [16]  # Define the hidden layers in the reward network
-        self.fc_value_layers = [16]  # Define the hidden layers in the value network
-        self.fc_policy_layers = [16]  # Define the hidden layers in the policy network
+        self.fc_representation_layers = [250]  # Define the hidden layers in the representation network
+        self.fc_dynamics_layers = [250]  # Define the hidden layers in the dynamics network
+        self.fc_reward_layers = [250]  # Define the hidden layers in the reward network
+        self.fc_value_layers = [250]  # Define the hidden layers in the value network
+        self.fc_policy_layers = [250]  # Define the hidden layers in the policy network
 
 
         # Self-Play
-        self.num_workers = 1  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 8  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = False
         self.num_actors = 3000
         self.max_moves = self.max_moves * self.num_actors
@@ -222,7 +221,7 @@ class TradingEnv:
             if (self.position < 0):
                 #close a short position
                 quantity = self.position
-                self.balance += (abs(self.position) * self.avg_price) - (abs(self.position) * price) 
+                self.balance += (abs(self.position) * self.avg_price) + (self.avg_price - price) * abs(self.position)
                 self.avg_price = 0
                 self.position = 0
             else: 
@@ -235,7 +234,7 @@ class TradingEnv:
             if (self.position > 0):
                 #close a long position
                 quantity = self.position
-                self.balance += (self.position * price) - (self.position * self.avg_price)
+                self.balance += self.position * price
                 self.avg_price = 0
                 self.position = 0
             else: 
@@ -245,11 +244,14 @@ class TradingEnv:
                 self.balance -= quantity * price
             self.balance -= (quantity * price * 0.001)
 
-        reward =  (self.position * (self.avg_price - price)) + (self.balance - starting_balance)
+        realized_profits = self.balance - starting_balance + abs(self.position) * self.avg_price 
+        unrealized_profits = (self.position * (self.avg_price - price))    
+        equity = realized_profits + unrealized_profits
+        reward =  equity
         
         self.current_step += 1
         self.observation = self.prices[self.current_step:self.current_step+self.prices_length]
-        done = self.current_step >= self.max_steps or reward <= -starting_balance
+        done = self.current_step >= self.max_steps or (self.balance < stake_amount and self.position == 0) or equity < 0
 
         return self.observation, reward, done
 
